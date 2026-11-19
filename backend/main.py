@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 from typing import Optional
-import os, re
+import os, re, json
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -103,18 +103,33 @@ def mock_parse(text: str):
 async def parse_assistant(payload: ParseInput):
     text = payload.text.strip()
     if not text: raise HTTPException(400, "Text is required")
-    endpoint = os.getenv("LLM_API_URL", "").strip()
-    if endpoint:
-        headers = {"Content-Type": "application/json"}
-        if os.getenv("LLM_API_KEY"): headers["Authorization"] = f"Bearer {os.getenv('LLM_API_KEY')}"
-        try:
-            async with httpx.AsyncClient(timeout=35) as client:
-                response = await client.post(endpoint, json={"text": text}, headers=headers)
-                response.raise_for_status()
-                return response.json()
-        except Exception as exc:
-            # Keep the student workflow usable if the remote model is temporarily offline.
-            fallback = mock_parse(text)
-            fallback["reply"] = "AI service unavailable; I saved a basic draft instead. " + fallback["reply"]
-            return fallback
-    return mock_parse(text)
+    base = os.getenv("LLM_API_URL", "").strip().rstrip("/")
+    if not base: return mock_parse(text)
+    endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + os.getenv("LLM_API_KEY", "lm-studio")}
+    system_prompt = (
+        "You are Student Assist. Extract EVERY distinct task/event and split unrelated activities. "
+        "Create useful subtasks for exams and assignments. Do not invent deadlines; if missing use today and 18:00 as draft defaults. "
+        "Return ONLY valid JSON: {\"reply\":\"confirmation\",\"tasks\":[{\"title\":\"...\",\"category\":\"Exam|Assignment|Study|Personal\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"priority\":\"High|Medium|Low\",\"description\":\"...\",\"subtasks\":[\"...\"]}]}. "
+        f"Today is {date.today().isoformat()}. Interpret relative dates from today."
+    )
+    body = {"model": os.getenv("LLM_MODEL", "qwen/qwen3.5-9b"), "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}], "temperature": 0.2, "stream": False}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(endpoint, json=body, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+        content = result["choices"][0]["message"]["content"]
+        content = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", str(content).strip(), flags=re.IGNORECASE)
+        data = json.loads(content)
+        tasks = data.get("tasks", [])
+        if not isinstance(tasks, list) or not tasks: raise ValueError("No tasks returned")
+        for task in tasks:
+            task.setdefault("date", date.today().isoformat()); task.setdefault("time", "18:00")
+            task.setdefault("category", "Study"); task.setdefault("priority", "Medium")
+            task.setdefault("description", ""); task.setdefault("subtasks", [])
+        return {"reply": data.get("reply", "I organised your tasks."), "tasks": tasks}
+    except Exception:
+        fallback = mock_parse(text)
+        fallback["reply"] = "LLM unavailable or returned invalid data; showing a basic draft. " + fallback["reply"]
+        return fallback
