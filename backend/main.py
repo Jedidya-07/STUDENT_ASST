@@ -5,7 +5,8 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import SQLModel, Field, Session, create_engine, select\nfrom sqlalchemy import Column\nfrom sqlalchemy.types import JSON
+from sqlmodel import SQLModel, Field, Session, create_engine, select
+from sqlalchemy import Column\nfrom sqlalchemy.types import JSON
 
 load_dotenv()
 DB_URL = "sqlite:///./student_assist.db"
