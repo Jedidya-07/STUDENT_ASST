@@ -4,6 +4,7 @@ import os, re, json
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import Column
@@ -104,7 +105,7 @@ def mock_parse(text: str):
 async def parse_assistant(payload: ParseInput):
     text = payload.text.strip()
     if not text: raise HTTPException(400, "Text is required")
-    base = os.getenv("LLM_API_URL", "").strip().rstrip("/")
+    base = os.getenv("LLM_BASE_URL", os.getenv("LLM_API_URL", "")).strip().rstrip("/")
     if not base: return mock_parse(text)
     endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
     headers = {"Content-Type": "application/json", "Authorization": "Bearer " + os.getenv("LLM_API_KEY", "lm-studio")}
@@ -114,7 +115,7 @@ async def parse_assistant(payload: ParseInput):
         "Return ONLY valid JSON: {\"reply\":\"confirmation\",\"tasks\":[{\"title\":\"...\",\"category\":\"Exam|Assignment|Study|Personal\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"priority\":\"High|Medium|Low\",\"description\":\"...\",\"subtasks\":[\"...\"]}]}. "
         f"Today is {date.today().isoformat()}. Interpret relative dates from today."
     )
-    body = {"model": os.getenv("LLM_MODEL", "qwen/qwen3.5-9b"), "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}], "temperature": 0.2, "stream": False}
+    body = {"model": os.getenv("LLM_MODEL", "qwen/qwen3.5-9b"), "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}], "temperature": 0.7, "max_tokens": 1024, "stream": False}
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(endpoint, json=body, headers=headers)
@@ -134,3 +135,61 @@ async def parse_assistant(payload: ParseInput):
         fallback = mock_parse(text)
         fallback["reply"] = "LLM unavailable or returned invalid data; showing a basic draft. " + fallback["reply"]
         return fallback
+
+
+class StreamInput(SQLModel):
+    messages: list[dict] = []
+
+@app.post("/assistant/stream")
+async def assistant_stream(payload: StreamInput):
+    """Stream OpenAI-compatible LM Studio output to the browser as SSE."""
+    base = os.getenv("LLM_BASE_URL", "http://192.168.137.180:1235/v1").strip().rstrip("/")
+    endpoint = base if base.endswith("/chat/completions") else base + "/chat/completions"
+    history = payload.messages[-8:]
+    system_prompt = (
+        "You are Student Assist, a student productivity assistant. Be concise and helpful. "
+        "When the user describes schedules, return a valid JSON object with keys reply and tasks. "
+        "Each task must have title, category, date (YYYY-MM-DD), time (HH:MM), priority, description, and subtasks (array). "
+        "Extract every distinct task. Do not invent deadlines; if missing, use today's date and 18:00 as a draft default. "
+        f"Today is {date.today().isoformat()}."
+    )
+    messages = [{"role": "system", "content": system_prompt}] + history
+    body = {
+        "model": os.getenv("LLM_MODEL", "qwen/qwen3.5-9b"),
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024,
+        "stream": True
+    }
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer " + os.getenv("LLM_API_KEY", "lm-studio")}
+
+    async def event_stream():
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=5.0)) as client:
+                async with client.stream("POST", endpoint, json=body, headers=headers) as response:
+                    if response.status_code >= 400:
+                        detail = (await response.aread()).decode("utf-8", errors="replace")
+                        yield "event: error\ndata: " + json.dumps({"message": f"LM Studio returned HTTP {response.status_code}", "detail": detail[:500]}) + "\n\n"
+                        return
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if raw == "[DONE]":
+                            yield "event: done\ndata: {}\n\n"
+                            return
+                        try:
+                            packet = json.loads(raw)
+                            choice = (packet.get("choices") or [{}])[0]
+                            delta = choice.get("delta") or {}
+                            token = delta.get("content")
+                            if token:
+                                yield "data: " + json.dumps({"token": token}, ensure_ascii=False) + "\n\n"
+                        except json.JSONDecodeError:
+                            continue
+        except (httpx.ConnectError, httpx.TimeoutException):
+            yield "event: error\ndata: " + json.dumps({"message": "Cannot reach LM Studio. Check that PC 2 is on, LM Studio is serving on port 1235, and both PCs can reach 192.168.137.180."}) + "\n\n"
+        except Exception as exc:
+            yield "event: error\ndata: " + json.dumps({"message": "LM Studio streaming failed: " + str(exc)[:300]}) + "\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
