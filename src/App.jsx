@@ -1,6 +1,6 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API = localStorage.getItem('student-assist-api') || import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const seed = [
  {id:1,title:'Revise DBMS — Unit 2',category:'Study',date:today(),time:'16:30',priority:'High',status:'pending',description:'Review normalization, transactions and SQL joins.',subtasks:['Review class notes','Practice 10 questions','Make a one-page revision sheet']},
  {id:2,title:'Gym session',category:'Personal',date:today(),time:'18:00',priority:'Medium',status:'pending',description:'Upper body workout · 60 minutes',subtasks:[]},
