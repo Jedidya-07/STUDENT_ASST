@@ -5,7 +5,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlmodel import SQLModel, Field, Session, create_engine, select
+from sqlmodel import SQLModel, Field, Session, create_engine, select\nfrom sqlalchemy import Column\nfrom sqlalchemy.types import JSON
 
 load_dotenv()
 DB_URL = "sqlite:///./student_assist.db"
@@ -20,7 +20,7 @@ class Task(SQLModel, table=True):
     priority: str = "Medium"
     status: str = "pending"
     description: str = ""
-    subtasks: list[str] = Field(default=[], sa_type=None)
+    subtasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
 
 class TaskInput(SQLModel):
     title: str
