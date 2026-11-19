@@ -52,7 +52,7 @@ def health():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "llm_configured": bool(os.getenv("LLM_API_URL"))}
+    return {"status": "ok", "llm_configured": bool(os.getenv("LLM_BASE_URL") or os.getenv("LLM_API_URL"))}
 
 @app.get("/tasks")
 def list_tasks():
@@ -148,7 +148,7 @@ async def assistant_stream(payload: StreamInput):
     history = payload.messages[-8:]
     system_prompt = (
         "You are Student Assist, a student productivity assistant. Be concise and helpful. "
-        "When the user describes schedules, return a valid JSON object with keys reply and tasks. "
+        "When the user describes schedules, return ONLY valid JSON (no markdown) with keys reply and tasks. "
         "Each task must have title, category, date (YYYY-MM-DD), time (HH:MM), priority, description, and subtasks (array). "
         "Extract every distinct task. Do not invent deadlines; if missing, use today's date and 18:00 as a draft default. "
         f"Today is {date.today().isoformat()}."
